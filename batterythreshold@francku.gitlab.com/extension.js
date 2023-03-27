@@ -32,8 +32,7 @@ const _ = ExtensionUtils.gettext;
 const ByteArray = imports.byteArray;
 
 let battery = "BAT0";
-let threshold_command = "pkexec tee /sys/class/power_supply/BAT0/charge_control_end_threshold";
-let read_threshold_command = "cat /sys/class/power_supply/BAT0/charge_control_end_threshold";
+let end_threshold = `/sys/class/power_supply/${battery}/charge_control_end_threshold`;
 
 const Indicator = GObject.registerClass(
     class Indicator extends PanelMenu.Button {
@@ -85,8 +84,7 @@ const Indicator = GObject.registerClass(
             if (batteries.length > 0 && batteries.indexOf("BAT0") < 0) {
                 // No BAT0, pick "first" one that appeared among alternatives.
 		let newbat = batteries[0];
-                threshold_command = threshold_command.replace(battery, newbat);
-                read_threshold_command = read_threshold_command.replace(battery, newbat);
+                end_threshold = end_threshold.replace(battery, newbat);
 	        battery = newbat;
 
                 //Main.notify(_(`Using battery ${battery}`));
@@ -96,8 +94,16 @@ const Indicator = GObject.registerClass(
         set_threshold(new_threshold) {
             if (new_threshold !== this.threshold) {
                 try {
+                    let command = `echo ${new_threshold} | pkexec tee ${end_threshold}`;
+                    const start_threshold = end_threshold.replace("_end_", "_start_");
+		    const startfile = Gio.File.new_for_path(start_threshold);
+                    if (startfile.query_exists(null)) {
+                        const new_start_threshold = (parseInt(new_threshold, 10) - 20).toString();
+                        const start_command = `echo ${new_start_threshold} | pkexec tee ${start_threshold} > /dev/null`;
+			command = command + " ; " + start_command;
+		    }
                     let proc = Gio.Subprocess.new(
-                        ['/bin/bash', '-c', `echo ${new_threshold} | ${threshold_command}`],
+                        ['/bin/bash', '-c', command],
                         Gio.SubprocessFlags.STDERR_PIPE
                     );
                     proc.communicate_utf8_async(null, null, (proc, res) => {
@@ -122,7 +128,7 @@ const Indicator = GObject.registerClass(
         }
 
         get_threshold() {
-            let [, out, ,] = GLib.spawn_command_line_sync(read_threshold_command);
+            let [, out, ,] = GLib.spawn_command_line_sync(`cat ${end_threshold}`);
             this.threshold = (ByteArray.toString(out)).trim();
         }
 
@@ -136,7 +142,17 @@ class Extension {
     }
 
     enable() {
+        this.settings = ExtensionUtils.getSettings(
+            'org.gnome.shell.extensions.batterythreshold');
         this._indicator = new Indicator();
+
+        this.settings.bind(
+            'threshold',
+            this._indicator,
+            'threshold',
+            Gio.SettingsBindFlags.DEFAULT
+        );
+
         Main.panel.addToStatusArea(this._uuid, this._indicator);
     }
 
